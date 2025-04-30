@@ -87,6 +87,73 @@ func (h *Hertz) SetCustomSignalWaiter(f func(err chan error) error) {
 
 // Default implementation for signal waiter.
 // SIGHUP|SIGINT|SIGTERM triggers graceful shutdown.
+// 这段代码不会卡住不动，但它的行为取决于 `signals` 和 `errCh` 通道的状态。如果这两个通道都没有数据发送到它们，`select` 会阻塞，等待其中一个通道接收到数据。
+//
+// ---
+//
+// ## **代码分析**
+//
+// ### **1. `select` 的行为**
+// - `select` 会监听多个通道的状态。
+// - 如果所有通道都没有数据可读，`select` 会阻塞，直到其中一个通道有数据可读。
+//
+// ### **2. `signals` 通道**
+// - `signals` 通常是一个用于接收系统信号的通道（例如通过 `os/signal.Notify` 注册）。
+// - 如果没有信号发送到 `signals`，`select` 会在这里阻塞。
+//
+// ### **3. `errCh` 通道**
+// - `errCh` 是一个用于接收错误的通道。
+// - 如果没有错误发送到 `errCh`，`select` 也会在这里阻塞。
+//
+// ---
+//
+// ## **程序是否会卡住？**
+//
+// ### **会阻塞的情况**
+// - 如果 `signals` 和 `errCh` 都没有数据发送到它们，`select` 会阻塞，程序看起来像是“卡住”了。
+//
+// ### **不会阻塞的情况**
+// - 如果 `signals` 接收到信号（如 `syscall.SIGHUP`、`syscall.SIGINT`、`syscall.SIGTERM`），程序会执行相应的逻辑并退出。
+// - 如果 `errCh` 接收到错误，程序会立即返回错误并退出。
+//
+// ---
+//
+// ## **如何避免“卡住”**
+//
+// 如果你希望程序在没有信号或错误时继续运行，可以添加一个 `default` 分支到 `select`，这样即使没有数据，`select` 也不会阻塞：
+//
+// ```go
+// select {
+// case sig := <-signals:
+//
+//	switch sig {
+//	case syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM:
+//		hlog.SystemLogger().Infof("Received signal: %s\n", sig)
+//		// graceful shutdown
+//		return nil
+//	}
+//
+// case err := <-errCh:
+//
+//	// error occurs, exit immediately
+//	return err
+//
+// default:
+//
+//		// No data, continue execution
+//	}
+//
+// ```
+//
+// 不过，添加 `default` 分支后，`select` 会变成非阻塞的，这可能会导致程序频繁轮询，浪费 CPU 资源。
+//
+// ---
+//
+// ## **总结**
+//
+// - 这段代码不会“卡住”，但会阻塞在 `select`，等待 `signals` 或 `errCh` 通道接收到数据。
+// - 如果需要避免阻塞，可以添加 `default` 分支，但要注意可能引入的性能问题。
+// - 如果程序需要长时间运行并等待信号或错误，这种阻塞行为是正常且预期的。
 func waitSignal(errCh chan error) error {
 	signalToNotify := []os.Signal{syscall.SIGINT, syscall.SIGHUP, syscall.SIGTERM}
 	if signal.Ignored(syscall.SIGHUP) {
